@@ -1,6 +1,8 @@
 .env
 .env.*
 !.env.example
+*.local.md
+PROJECT_GUIDE.local.md
 __pycache__/
 *.py[cod]
 .venv/

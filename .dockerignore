@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+**/*.local.md
+PROJECT_GUIDE.local.md
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+development_docs
+*.md
+!README.md
