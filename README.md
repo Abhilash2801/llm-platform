@@ -1,16 +1,70 @@
 # LLM Gateway
 
-One chat API for product teams. Many model vendors behind it. Failover, retries, timeouts, load balancing, and usage logs are driven by a JSON **config**, not by vendor-specific code in each app.
+One chat API for product teams. Many model vendors behind it. Reliability, guardrails, and usage are driven by a JSON **config**, not by vendor-specific code in each app.
 
 Callers send `Authorization: Bearer <gateway-key>` and a `messages` list. They do not need to know which vendor answered.
+
+## Features
+
+| Feature | What it does |
+|---|---|
+| Multi-vendor routing | One `POST /v1/chat/completions` in front of a provider catalog (Groq, xAI/Grok, OpenAI, Anthropic, Mistral, …). |
+| Fallback | Try target A; on timeout / 429 / 5xx (configurable), try target B. |
+| Retries | Exponential backoff with jitter, per target, up to `max_attempts`. |
+| Timeouts | Each attempt is killed after `timeout_ms` so a hung vendor cannot hang the caller. |
+| Load balancing | Weighted random split across targets (`strategy: "loadbalance"`). |
+| Output guardrails | Banned-word check and max-length check on the model reply. `on_fail`: `block` (HTTP 422) or `retry`. |
+| Auth / callers | Gateway API keys, stored hashed, mapped to a caller (e.g. team-a / team-b) and a default config. |
+| Usage analytics | `GET /v1/usage` — request count, tokens, estimated cost, error rate, fallback rate, latency p50/p95, breakdown by vendor. |
+| Provider catalog | `GET /v1/providers` — ids, env var names, example models, `configured: true/false` (never the secret). |
 
 ```
 Client  -->  POST /v1/chat/completions
                 auth + per-key config
-                executor (fallback | loadbalance)
+                executor (fallback | loadbalance | retry | timeout)
+                output guardrails
                 provider catalog  -->  vendor A / vendor B / …
                 usage_logs --> Postgres
 ```
+
+## HTTP API
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/health` | no | liveness |
+| GET | `/docs` | no | OpenAPI UI |
+| GET | `/v1/providers` | no | vendor catalog |
+| POST | `/v1/chat/completions` | Bearer gateway key | chat |
+| GET | `/v1/usage` | Bearer gateway key | usage aggregates |
+
+Errors: `401` bad/missing key, `422` guardrail blocked, `503` all targets exhausted.
+
+## Output guardrails
+
+Implemented in `app/executor/guardrails.py`. They run on the **model output** after a successful vendor call.
+
+| Check | Config | Behavior |
+|---|---|---|
+| `banned_words` | `banned_words`: list of strings (default demo token `BANNED_PHRASE_42`) | Fail if the reply contains a listed phrase |
+| `max_length` | `max_length`: character cap (default 4000) | Fail if the reply is too long |
+
+`on_fail`:
+
+- `"block"` — return **422** to the caller (`guardrail_blocked`). Do not send the model text.
+- `"retry"` — treat it like a failed attempt (retry the same target, then fallback if the strategy allows).
+
+Enable them on the request or on the caller’s stored config:
+
+```json
+"guardrails": {
+  "output": ["banned_words", "max_length"],
+  "on_fail": "block",
+  "banned_words": ["BANNED_PHRASE_42"],
+  "max_length": 4000
+}
+```
+
+`scripts/demo.py` includes a guardrail case: a prompt that forces `BANNED_PHRASE_42` should return 422.
 
 ## Add a vendor
 
@@ -69,6 +123,8 @@ Attach as the caller’s default (seed) or as `config` on one request. Provider 
 ```
 
 `strategy: "loadbalance"` picks a target by `weight` and retries that target only.
+
+The `guardrails` object is optional. If omitted, replies are not scanned.
 
 ## Quick start
 
