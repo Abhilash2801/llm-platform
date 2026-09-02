@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import ApiKey, Caller, Config
 from app.db.session import get_db
-from app.schemas import GLOBAL_DEFAULT_CONFIG, ReliabilityConfig
+from app.schemas import ReliabilityConfig, default_reliability_config
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -25,7 +25,7 @@ class AuthContext:
 
 def resolve_config_body(body: dict | None) -> ReliabilityConfig:
     if not body:
-        return GLOBAL_DEFAULT_CONFIG
+        return default_reliability_config()
     return ReliabilityConfig.model_validate(body)
 
 
@@ -45,7 +45,7 @@ def get_auth_context(
     if caller is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown caller")
 
-    default_config = GLOBAL_DEFAULT_CONFIG
+    default_config = default_reliability_config()
     if api_key.default_config_id:
         stored = db.get(Config, api_key.default_config_id)
         if stored is not None:

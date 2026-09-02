@@ -10,28 +10,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.auth import hash_api_key
 from app.db.models import ApiKey, Caller, Config
 from app.db.session import Base, SessionLocal, engine
+from app.providers.registry import demo_target_pair
 
-TEAM_A_CONFIG = {
-    "strategy": "fallback",
-    "targets": [
-        {"provider": "openai", "model": "gpt-4o-mini", "weight": 1},
-        {"provider": "groq", "model": "llama-3.1-8b-instant", "weight": 1},
-    ],
-    "on_status_codes": [429, 500, 502, 503, 504],
-    "retry": {"max_attempts": 2, "base_delay_ms": 200, "max_delay_ms": 2000},
-    "timeout_ms": 15000,
-}
 
-TEAM_B_CONFIG = {
-    "strategy": "loadbalance",
-    "targets": [
-        {"provider": "openai", "model": "gpt-4o-mini", "weight": 0.7},
-        {"provider": "groq", "model": "llama-3.1-8b-instant", "weight": 0.3},
-    ],
-    "on_status_codes": [429, 500, 502, 503, 504],
-    "retry": {"max_attempts": 2, "base_delay_ms": 200, "max_delay_ms": 2000},
-    "timeout_ms": 15000,
-}
+def team_configs() -> tuple[dict, dict]:
+    primary, secondary = demo_target_pair()
+    fallback = {
+        "strategy": "fallback",
+        "targets": [primary, secondary],
+        "on_status_codes": [429, 500, 502, 503, 504],
+        "retry": {"max_attempts": 2, "base_delay_ms": 200, "max_delay_ms": 2000},
+        "timeout_ms": 15000,
+    }
+    balanced_a = {**primary, "weight": 0.7}
+    balanced_b = {**secondary, "weight": 0.3}
+    loadbalance = {
+        "strategy": "loadbalance",
+        "targets": [balanced_a, balanced_b],
+        "on_status_codes": [429, 500, 502, 503, 504],
+        "retry": {"max_attempts": 2, "base_delay_ms": 200, "max_delay_ms": 2000},
+        "timeout_ms": 15000,
+    }
+    return fallback, loadbalance
 
 
 def upsert_caller(db, name: str, config_name: str, config_body: dict) -> str:
@@ -66,16 +66,19 @@ def upsert_caller(db, name: str, config_name: str, config_body: dict) -> str:
 
 
 def main() -> None:
+    fallback, loadbalance = team_configs()
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        team_a_key = upsert_caller(db, "team-a", "team-a-default", TEAM_A_CONFIG)
-        team_b_key = upsert_caller(db, "team-b", "team-b-default", TEAM_B_CONFIG)
+        team_a_key = upsert_caller(db, "team-a", "team-a-default", fallback)
+        team_b_key = upsert_caller(db, "team-b", "team-b-default", loadbalance)
         db.commit()
     finally:
         db.close()
 
     print("Demo callers seeded.")
+    print(f"team-a fallback targets: {fallback['targets']}")
+    print(f"team-b loadbalance targets: {loadbalance['targets']}")
     print(f"TEAM_A_KEY={team_a_key}")
     print(f"TEAM_B_KEY={team_b_key}")
     print("Save these keys. They are stored hashed and will not be shown again unless you reseed with a fresh DB.")

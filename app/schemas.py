@@ -71,7 +71,11 @@ class UsageResponse(BaseModel):
     by_provider: dict[str, int]
 
 
-GLOBAL_DEFAULT_CONFIG = ReliabilityConfig(
-    strategy="fallback",
-    targets=[Target(provider="openai", model="gpt-4o-mini")],
-)
+def default_reliability_config() -> ReliabilityConfig:
+    from app.providers.registry import demo_target_pair
+
+    primary, _secondary = demo_target_pair()
+    return ReliabilityConfig(
+        strategy="fallback",
+        targets=[Target(provider=primary["provider"], model=primary["model"], weight=1)],
+    )

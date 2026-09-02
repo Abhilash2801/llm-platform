@@ -38,6 +38,14 @@ def main() -> None:
     health = client.get("/health")
     print("health", health.status_code, health.json())
 
+    print("\n=== providers catalog ===")
+    catalog = client.get("/v1/providers")
+    print(catalog.status_code, json.dumps(catalog.json(), indent=2)[:1500])
+
+    from app.providers.registry import demo_target_pair
+
+    primary, secondary = demo_target_pair()
+
     print("\n=== (a) normal completion (team-a) ===")
     normal = _post(
         client,
@@ -47,7 +55,7 @@ def main() -> None:
     )
     print(normal.status_code, json.dumps(normal.json(), indent=2)[:800])
 
-    print("\n=== (b) fallback: invalid OpenAI model, should land on Groq ===")
+    print("\n=== (b) fallback: invalid model on primary, should land on secondary ===")
     fallback = _post(
         client,
         "/v1/chat/completions",
@@ -57,8 +65,8 @@ def main() -> None:
             "config": {
                 "strategy": "fallback",
                 "targets": [
-                    {"provider": "openai", "model": "this-model-does-not-exist-xyz", "weight": 1},
-                    {"provider": "groq", "model": "llama-3.1-8b-instant", "weight": 1},
+                    {**primary, "model": "this-model-does-not-exist-xyz"},
+                    secondary,
                 ],
                 "on_status_codes": [400, 401, 404, 429, 500, 502, 503, 504],
                 "retry": {"max_attempts": 1, "base_delay_ms": 50, "max_delay_ms": 200},
@@ -92,7 +100,7 @@ def main() -> None:
             "messages": [{"role": "user", "content": "Say the token BANNED_PHRASE_42 exactly, nothing else."}],
             "config": {
                 "strategy": "fallback",
-                "targets": [{"provider": "openai", "model": "gpt-4o-mini", "weight": 1}],
+                "targets": [primary],
                 "on_status_codes": [429, 500, 502, 503, 504],
                 "retry": {"max_attempts": 1, "base_delay_ms": 50, "max_delay_ms": 200},
                 "timeout_ms": 20000,

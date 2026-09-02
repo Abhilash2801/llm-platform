@@ -1,57 +1,65 @@
-<<<<<<< HEAD
-# llm-platform
-=======
-# LLM API Gateway
+# LLM Gateway
 
-OpenAI-compatible `POST /v1/chat/completions` in front of multiple LLM vendors. Live demo path is **OpenAI** and **Groq**. Any other OpenAI-compatible HTTP API (xAI Grok, Together, Fireworks, …) can be registered without changing executor code.
+One chat API for product teams. Many model vendors behind it. Failover, retries, timeouts, load balancing, and usage logs are driven by a JSON **config**, not by vendor-specific code in each app.
 
-Reliability behavior lives in a JSON **config** (per API key, or overridden on the request). Product callers only send `Authorization: Bearer <gateway-key>` and an OpenAI-style `messages` array.
-
-This is a portfolio-scale slice of the same category as [Portkey's AI Gateway](https://github.com/Portkey-AI/gateway): the reliability primitives, not the full guardrail catalog.
-
-## Architecture
+Callers send `Authorization: Bearer <gateway-key>` and a `messages` list. They do not need to know which vendor answered.
 
 ```
-Client  --Bearer key-->  FastAPI gateway
-                           auth + config resolver
-                           executor (fallback | loadbalance, retry, timeout)
-                           provider catalog (OpenAI-compatible HTTP)
-                           usage_logs --> Postgres
+Client  -->  POST /v1/chat/completions
+                auth + per-key config
+                executor (fallback | loadbalance)
+                provider catalog  -->  vendor A / vendor B / …
+                usage_logs --> Postgres
 ```
 
-## Quick start
+## Add a vendor
+
+**1. Built-in (set a key, then use the id in config)**
+
+`GET /v1/providers` lists every built-in id, env var name, example model, and whether a key is present (`configured`, never the secret).
+
+| id | Env var | Protocol |
+|---|---|---|
+| anthropic | `ANTHROPIC_API_KEY` | Anthropic Messages |
+| deepseek | `DEEPSEEK_API_KEY` | chat completions |
+| fireworks | `FIREWORKS_API_KEY` | chat completions |
+| google / gemini | `GOOGLE_API_KEY` | chat completions |
+| groq | `GROQ_API_KEY` | chat completions |
+| mistral | `MISTRAL_API_KEY` | chat completions |
+| ollama | `OLLAMA_API_KEY` (optional) | chat completions (local) |
+| openai | `OPENAI_API_KEY` | chat completions |
+| openrouter | `OPENROUTER_API_KEY` | chat completions |
+| perplexity | `PERPLEXITY_API_KEY` | chat completions |
+| together | `TOGETHER_API_KEY` | chat completions |
+| xai / grok | `XAI_API_KEY` | chat completions (xAI Grok, not Groq) |
+
+Fill any of those in `.env`. Leave the rest empty.
+
+**2. Vendor not in the table**
+
+If they speak the common `{model, messages}` chat-completions HTTP API:
 
 ```bash
-cp .env.example .env   # set OPENAI_API_KEY and GROQ_API_KEY
-docker compose up --build
-python scripts/seed_callers.py
-# copy TEAM_A_KEY and TEAM_B_KEY from the seed output
-export TEAM_A_KEY=...
-export TEAM_B_KEY=...
-python scripts/demo.py
+EXTRA_PROVIDERS_JSON={"myvendor":{"base_url":"https://api.example.com/v1","api_key_env":"MYVENDOR_API_KEY","example_model":"their-model"}}
+MYVENDOR_API_KEY=...
 ```
 
-Without Docker for the app (Postgres still via Compose):
+Use `"provider": "myvendor"` in `config.targets`. Do not put secrets inside the JSON.
 
-```bash
-docker compose up -d postgres
-# use any Python 3.12+ env that has the packages in requirements.txt
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-```
+**3. Completely different HTTP API**
 
-OpenAPI UI: `http://localhost:8000/docs`
+Add a small adapter class (see `app/providers/anthropic_adapter.py`) and a `protocol` row in `app/providers/catalog.py`. The executor does not change.
 
-## Config object
+## Reliability config
 
-Attach as the caller's default (seeded) or as `config` on the request body:
+Attach as the caller’s default (seed) or as `config` on one request. Provider ids are catalog ids, not hardcoded vendors.
 
 ```json
 {
   "strategy": "fallback",
   "targets": [
-    {"provider": "openai", "model": "gpt-4o-mini", "weight": 1},
-    {"provider": "groq", "model": "llama-3.1-8b-instant", "weight": 1}
+    {"provider": "groq", "model": "llama-3.1-8b-instant", "weight": 1},
+    {"provider": "xai", "model": "grok-2-latest", "weight": 1}
   ],
   "on_status_codes": [429, 500, 502, 503, 504],
   "retry": {"max_attempts": 3, "base_delay_ms": 500, "max_delay_ms": 8000},
@@ -62,33 +70,54 @@ Attach as the caller's default (seeded) or as `config` on the request body:
 
 `strategy: "loadbalance"` picks a target by `weight` and retries that target only.
 
-## Demo callers
-
-| Caller | Default behavior |
-|---|---|
-| team-a | Fallback OpenAI `gpt-4o-mini` → Groq `llama-3.1-8b-instant` |
-| team-b | Load-balance 70% OpenAI / 30% Groq |
-
-## Adding another provider
-
-If the vendor speaks OpenAI's `/v1/chat/completions` API, register it. Built-ins: `openai`, `groq`, `xai` (alias `grok`). Extra vendors via env (keys stay in env vars, not in the JSON):
+## Quick start
 
 ```bash
-EXTRA_PROVIDERS_JSON='{"together":{"base_url":"https://api.together.xyz/v1","api_key_env":"TOGETHER_API_KEY"}}'
+cp .env.example .env          # set keys for the vendors you actually have
+docker compose up --build
+python scripts/seed_callers.py
+export TEAM_A_KEY=...         # printed once
+export TEAM_B_KEY=...
+python scripts/demo.py
 ```
 
-Then use `"provider": "together"` in a target. Native (non-OpenAI) APIs still need a small adapter class.
+Optional: pin which two vendors seed/demo use:
+
+```bash
+GATEWAY_PRIMARY_PROVIDER=groq
+GATEWAY_PRIMARY_MODEL=llama-3.1-8b-instant
+GATEWAY_SECONDARY_PROVIDER=openai
+GATEWAY_SECONDARY_MODEL=gpt-4o-mini
+```
+
+If those are empty, seed uses the first two vendors that have keys set.
+
+App only (Postgres via Compose):
+
+```bash
+docker compose up -d postgres
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+OpenAPI: `http://localhost:8000/docs`  
+Catalog: `http://localhost:8000/v1/providers`
+
+## Demo callers
+
+| Caller | Default |
+|---|---|
+| team-a | fallback: primary vendor → secondary vendor |
+| team-b | load-balance 70% / 30% across the same pair |
 
 ## Tests
 
 ```bash
-pytest tests/test_retry.py tests/test_guardrails.py tests/test_loadbalance.py tests/test_fallback.py
-pytest tests/test_fallback_integration.py   # needs live keys
+pytest tests/test_retry.py tests/test_guardrails.py tests/test_loadbalance.py tests/test_fallback.py tests/test_catalog.py
 ```
 
 ## Notes
 
-- Gateway API keys are stored as SHA-256 hashes. Provider keys stay in environment variables and are never committed.
-- Live testing in this workspace uses OpenAI + Groq. xAI Grok is wired as `xai` / `grok` when `XAI_API_KEY` is set.
-- Semantic cache, a management UI, quotas, and distributed tracing are out of scope for this build.
->>>>>>> Add OpenAI-compatible LLM gateway with Docker.
+- Gateway keys are hashed. Vendor keys stay in env / secret store, never in git.
+- Public chat path is `POST /v1/chat/completions` so existing client SDKs keep working; backends are not limited to one company.
+- Quotas, hard tenancy, and distributed tracing are not in this build.
